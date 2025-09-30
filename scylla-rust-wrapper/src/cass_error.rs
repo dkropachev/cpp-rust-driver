@@ -134,7 +134,9 @@ impl ToCassError for DbError {
             DbError::AlreadyExists { .. } => CassError::CASS_ERROR_SERVER_ALREADY_EXISTS,
             DbError::Unprepared { .. } => CassError::CASS_ERROR_SERVER_UNPREPARED,
             DbError::Other(num) => {
-                CassError((CassErrorSource::CASS_ERROR_SOURCE_SERVER.0 << 24) | *num as u32)
+                let source = CassErrorSource::CASS_ERROR_SOURCE_SERVER.0;
+                let code = (source << 24) | (*num as u32);
+                CassError(code as _)
             }
             // TODO: add appropriate error if rate limit reached
             DbError::RateLimitReached { .. } => CassError::CASS_ERROR_SERVER_UNAVAILABLE,
