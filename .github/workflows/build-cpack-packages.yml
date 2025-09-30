@@ -1,0 +1,171 @@
+name: Build CPack Packages
+
+on:
+  workflow_call:
+    inputs:
+      build-type:
+        description: CMake build type used for packaging
+        type: string
+        default: Release
+      extra-cmake-flags:
+        description: Additional flags passed to CMake configure step
+        type: string
+        default: ""
+      save-artifacts:
+        description: Save built packages as artifacts
+        type: boolean
+        default: false
+    secrets: {}
+  workflow_dispatch:
+    inputs:
+      build-type:
+        description: CMake build type used for packaging
+        type: string
+        default: Release
+      extra-cmake-flags:
+        description: Additional flags passed to CMake configure step
+        type: string
+        default: ""
+      save-artifacts:
+        description: Save built packages as artifacts
+        type: boolean
+        default: false
+    secrets: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux packages
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm ninja-build
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ inputs.build-type }} ${{ inputs.extra-cmake-flags }}
+
+      - name: Build
+        run: cmake --build build --config ${{ inputs.build-type }}
+
+      - name: Package (DEB and RPM)
+        working-directory: build
+        run: |
+          cpack -G DEB -C ${{ inputs.build-type }}
+          cpack -G RPM -C ${{ inputs.build-type }}
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p artifacts/linux
+          for file in build/*.deb build/*.rpm; do
+            cp "$file" artifacts/linux/
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.save-artifacts
+        with:
+          name: linux-packages
+          path: artifacts/linux
+          retention-days: 7
+
+  macos:
+    name: macOS packages
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ inputs.build-type }} ${{ inputs.extra-cmake-flags }}
+
+      - name: Build
+        run: cmake --build build --config ${{ inputs.build-type }}
+
+      - name: Package (pkg and dmg)
+        working-directory: build
+        run: |
+          cpack -G productbuild -C ${{ inputs.build-type }}
+          cpack -G DragNDrop -C ${{ inputs.build-type }}
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p artifacts/macos
+          for file in build/*.pkg build/*.dmg; do
+            cp "$file" artifacts/macos/
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.save-artifacts
+        with:
+          name: macos-packages
+          path: artifacts/macos
+          retention-days: 7
+
+  windows:
+    name: Windows packages
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add WiX to PATH
+        shell: pwsh
+        run: |
+          $wixPath = "C:\\Program Files (x86)\\WiX Toolset v3.11\\bin"
+          if (Test-Path $wixPath) { Add-Content -Path $env:GITHUB_PATH -Value $wixPath }
+
+      - name: Install OpenSSL
+        shell: pwsh
+        run: |
+          choco install openssl.light --no-progress -y
+          $opensslRoot = "C:\\Program Files\\OpenSSL-Win64"
+          if (-not (Test-Path $opensslRoot)) {
+            $opensslRoot = "C:\\Program Files\\OpenSSL"
+          }
+          if (-not (Test-Path $opensslRoot)) {
+            throw "OpenSSL installation path not found"
+          }
+          $libPath = Join-Path $opensslRoot "lib"
+          $vcLibPath = Join-Path $libPath "VC\\x64"
+          if (Test-Path $vcLibPath) {
+            $libPath = $vcLibPath
+          }
+          "OPENSSL_DIR=$opensslRoot" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENSSL_ROOT_DIR=$opensslRoot" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENSSL_LIB_DIR=$libPath" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          "OPENSSL_INCLUDE_DIR=$(Join-Path $opensslRoot 'include')" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ inputs.build-type }} ${{ inputs.extra-cmake-flags }}
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config ${{ inputs.build-type }}
+
+      - name: Package (MSI)
+        shell: pwsh
+        working-directory: build
+        run: cpack -G WIX -C ${{ inputs.build-type }}
+
+      - name: Collect artifacts
+        if: inputs.save-artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts\windows -Force | Out-Null
+          Get-ChildItem build -Filter *.msi | Copy-Item -Destination artifacts\windows
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.save-artifacts
+        with:
+          name: windows-packages
+          path: artifacts/windows
+          retention-days: 7
